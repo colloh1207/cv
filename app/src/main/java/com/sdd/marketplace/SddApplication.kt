@@ -25,7 +25,13 @@ class SddApplication : Application(), WorkConfig.Provider {
     override fun attachBaseContext(base: Context) {
         val prefs = base.getSharedPreferences("sdd_prefs", Context.MODE_PRIVATE)
         val langCode = prefs.getString("selected_language", "en") ?: "en"
-        val locale = Locale(langCode)
+        val locale = when {
+            langCode.contains("-") -> {
+                val parts = langCode.split("-")
+                Locale(parts[0], parts[1])
+            }
+            else -> Locale(langCode)
+        }
         Locale.setDefault(locale)
         val config = Configuration(base.resources.configuration)
         config.setLocale(locale)

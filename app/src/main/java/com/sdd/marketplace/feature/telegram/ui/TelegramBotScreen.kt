@@ -83,27 +83,29 @@ fun TelegramBotScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            when (uiState.connectionState) {
-                TelegramConnectionState.CONNECTED -> ConnectedState(
-                    botUsername = uiState.botUsername,
-                    onDisconnect = { viewModel.disconnectBot() },
-                    isLoading = uiState.isLoading
-                )
-                TelegramConnectionState.VALIDATING -> ValidatingState()
-                else -> DisconnectedState(
-                    token = token,
-                    onTokenChange = { token = it },
-                    showInput = showTokenInput,
-                    onShowInput = { showTokenInput = true },
-                    onConnect = { viewModel.connectBot(token) },
-                    isLoading = uiState.isLoading,
-                    error = uiState.error
-                )
+            if (uiState.kycChecked && !uiState.kycApproved) {
+                KycGateCard(onNavigateToKyc = { navController.navigate("kyc_verification") })
+            } else {
+                when (uiState.connectionState) {
+                    TelegramConnectionState.CONNECTED -> ConnectedState(
+                        botUsername = uiState.botUsername,
+                        onDisconnect = { viewModel.disconnectBot() },
+                        isLoading = uiState.isLoading
+                    )
+                    TelegramConnectionState.VALIDATING -> ValidatingState()
+                    else -> DisconnectedState(
+                        token = token,
+                        onTokenChange = { token = it },
+                        showInput = showTokenInput,
+                        onShowInput = { showTokenInput = true },
+                        onConnect = { viewModel.connectBot(token) },
+                        isLoading = uiState.isLoading,
+                        error = uiState.error
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))
-            KycRequiredNotice(onNavigateToKyc = { navController.navigate("kyc_verification") })
-            Spacer(Modifier.height(16.dp))
             HowItWorksSection()
             Spacer(Modifier.height(24.dp))
             BotCapabilitiesSection()
@@ -299,7 +301,7 @@ private fun BotCapabilitiesSection() {
 }
 
 @Composable
-private fun KycRequiredNotice(onNavigateToKyc: () -> Unit) {
+private fun KycGateCard(onNavigateToKyc: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),

@@ -190,6 +190,9 @@ dependencies {
     // ML Kit
     implementation(libs.mlkit.face.detection)
 
+    // Biometric
+    implementation(libs.androidx.biometric)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.mockk)

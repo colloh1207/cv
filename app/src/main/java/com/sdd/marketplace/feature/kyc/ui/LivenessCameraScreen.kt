@@ -2,14 +2,10 @@ package com.sdd.marketplace.feature.kyc.ui
 
 import android.Manifest
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.net.Uri
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -34,21 +30,8 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.*
 import com.sdd.marketplace.core.ui.theme.SddPink
 import java.io.File
-import java.io.FileOutputStream
-import java.util.concurrent.Executors
-
-enum class LivenessStep(val instruction: String, val emoji: String) {
-    WAITING_FACE("Position your face in the oval", "😐"),
-    BLINK("Blink your eyes slowly", "👁️"),
-    SMILE("Smile naturally", "😊"),
-    TURN_LEFT("Turn your head slowly to the left", "⬅️"),
-    TURN_RIGHT("Turn your head slowly to the right", "➡️"),
-    COMPLETE("Verification complete!", "✅")
-}
 
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
@@ -60,7 +43,7 @@ fun LivenessCameraScreen(
 
     when {
         cameraPermission.status.isGranted -> {
-            LivenessCameraContent(onComplete = onComplete, onCancel = onCancel)
+            SelfieCameraContent(onComplete = onComplete, onCancel = onCancel)
         }
         cameraPermission.status.shouldShowRationale -> {
             CameraPermissionRationale(
@@ -78,44 +61,17 @@ fun LivenessCameraScreen(
 }
 
 @Composable
-private fun LivenessCameraContent(
+private fun SelfieCameraContent(
     onComplete: (Uri) -> Unit,
     onCancel: () -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var currentStep by remember { mutableStateOf(LivenessStep.WAITING_FACE) }
-    var stepProgress by remember { mutableStateOf(0f) }
-    var capturedUri by remember { mutableStateOf<Uri?>(null) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    val imageAnalysisExecutor = remember { Executors.newSingleThreadExecutor() }
-    val faceDetector = remember {
-        val options = FaceDetectorOptions.Builder()
-            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-            .setMinFaceSize(0.25f)
-            .build()
-        FaceDetection.getClient(options)
-    }
-
-    var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
-
-    // Per-session counters — scoped to this composable instance, not file-level
-    var blinkFrames     by remember { mutableIntStateOf(0) }
-    var smileFrames     by remember { mutableIntStateOf(0) }
-    var turnLeftFrames  by remember { mutableIntStateOf(0) }
-    var turnRightFrames by remember { mutableIntStateOf(0) }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            faceDetector.close()
-            imageAnalysisExecutor.shutdown()
-        }
-    }
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var isCapturing by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(previewView) {
         val pv = previewView ?: return@LaunchedEffect
@@ -127,54 +83,12 @@ private fun LivenessCameraContent(
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                 .build()
             imageCapture = capture
-
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-
-            analysis.setAnalyzer(imageAnalysisExecutor) { proxy ->
-                if (currentStep == LivenessStep.COMPLETE) {
-                    proxy.close()
-                    return@setAnalyzer
-                }
-                val mediaImage = proxy.image
-                if (mediaImage != null) {
-                    val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-                    faceDetector.process(image)
-                        .addOnSuccessListener { faces ->
-                            if (faces.isNotEmpty()) {
-                                val face = faces.first()
-                                handleFaceDetection(
-                                    face, currentStep,
-                                    getBlinkFrames     = { blinkFrames },
-                                    setBlinkFrames     = { blinkFrames = it },
-                                    getSmileFrames     = { smileFrames },
-                                    setSmileFrames     = { smileFrames = it },
-                                    getTurnLeftFrames  = { turnLeftFrames },
-                                    setTurnLeftFrames  = { turnLeftFrames = it },
-                                    getTurnRightFrames = { turnRightFrames },
-                                    setTurnRightFrames = { turnRightFrames = it }
-                                ) { newStep, progress ->
-                                    stepProgress = progress
-                                    if (progress >= 1f) currentStep = newStep
-                                }
-                            }
-                            proxy.close()
-                        }
-                        .addOnFailureListener {
-                            proxy.close()
-                        }
-                } else {
-                    proxy.close()
-                }
-            }
-
             try {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_FRONT_CAMERA,
-                    preview, capture, analysis
+                    preview, capture
                 )
             } catch (e: Exception) {
                 errorMsg = "Camera unavailable: ${e.message}"
@@ -182,30 +96,13 @@ private fun LivenessCameraContent(
         }, ContextCompat.getMainExecutor(context))
     }
 
-    LaunchedEffect(currentStep) {
-        if (currentStep == LivenessStep.COMPLETE) {
-            val capture = imageCapture ?: return@LaunchedEffect
-            captureAndSave(context, capture) { uri ->
-                capturedUri = uri
-                if (uri != null) onComplete(uri)
-                else errorMsg = "Could not capture image. Please try again."
-            }
-        }
-    }
-
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
-            factory = { ctx ->
-                PreviewView(ctx).also { previewView = it }
-            },
+            factory = { ctx -> PreviewView(ctx).also { previewView = it } },
             modifier = Modifier.fillMaxSize()
         )
 
-        FaceOvalOverlay(
-            modifier = Modifier.fillMaxSize(),
-            step = currentStep,
-            progress = stepProgress
-        )
+        CircularSelfieGuide(modifier = Modifier.fillMaxSize())
 
         Column(
             Modifier.fillMaxSize().padding(24.dp),
@@ -215,7 +112,18 @@ private fun LivenessCameraContent(
                 IconButton(onClick = onCancel) {
                     Icon(Icons.Filled.Close, "Cancel", tint = Color.White, modifier = Modifier.size(28.dp))
                 }
-                LivenessStepIndicator(currentStep)
+                Surface(
+                    color = Color.Black.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text(
+                        "Selfie Verification",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
+                }
             }
 
             Column(
@@ -229,79 +137,96 @@ private fun LivenessCameraContent(
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = {
                         errorMsg = null
-                        currentStep = LivenessStep.WAITING_FACE
-                        stepProgress = 0f
+                        isCapturing = false
                     }) { Text("Try Again", color = Color.White) }
                 } ?: run {
-                    InstructionBubble(step = currentStep, progress = stepProgress)
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.65f),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Column(
+                            Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("📸", fontSize = 28.sp)
+                            Text(
+                                "Position your face in the circle",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                "Make sure your face is well-lit and clearly visible",
+                                color = Color.White.copy(alpha = 0.75f),
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 }
+
+                Spacer(Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        if (!isCapturing) {
+                            isCapturing = true
+                            val ic = imageCapture
+                            if (ic == null) {
+                                errorMsg = "Camera not ready. Please wait and try again."
+                                isCapturing = false
+                            } else {
+                                captureAndSave(context, ic) { uri ->
+                                    if (uri != null) {
+                                        onComplete(uri)
+                                    } else {
+                                        errorMsg = "Could not capture photo. Please try again."
+                                        isCapturing = false
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isCapturing,
+                    colors = ButtonDefaults.buttonColors(containerColor = SddPink),
+                    shape = CircleShape,
+                    modifier = Modifier.size(72.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    if (isCapturing) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(28.dp),
+                            strokeWidth = 3.dp
+                        )
+                    } else {
+                        Icon(Icons.Filled.CameraAlt, "Take Selfie", tint = Color.White, modifier = Modifier.size(32.dp))
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (isCapturing) "Processing…" else "Tap to take selfie",
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 13.sp
+                )
                 Spacer(Modifier.height(16.dp))
             }
         }
     }
 }
 
-private const val REQUIRED_FRAMES = 8
-
-private fun handleFaceDetection(
-    face: Face,
-    step: LivenessStep,
-    getBlinkFrames: () -> Int,     setBlinkFrames: (Int) -> Unit,
-    getSmileFrames: () -> Int,     setSmileFrames: (Int) -> Unit,
-    getTurnLeftFrames: () -> Int,  setTurnLeftFrames: (Int) -> Unit,
-    getTurnRightFrames: () -> Int, setTurnRightFrames: (Int) -> Unit,
-    onProgress: (LivenessStep, Float) -> Unit
-) {
-    when (step) {
-        LivenessStep.WAITING_FACE -> {
-            if (face.boundingBox.width() > 100) onProgress(LivenessStep.BLINK, 0f)
-        }
-        LivenessStep.BLINK -> {
-            val leftEye = face.leftEyeOpenProbability ?: 1f
-            val rightEye = face.rightEyeOpenProbability ?: 1f
-            if (leftEye < 0.2f && rightEye < 0.2f) {
-                val n = getBlinkFrames() + 1
-                setBlinkFrames(n)
-                if (n >= REQUIRED_FRAMES) { setBlinkFrames(0); onProgress(LivenessStep.SMILE, 1f) }
-                else onProgress(LivenessStep.BLINK, n.toFloat() / REQUIRED_FRAMES)
-            } else {
-                setBlinkFrames(maxOf(0, getBlinkFrames() - 1))
-            }
-        }
-        LivenessStep.SMILE -> {
-            val smile = face.smilingProbability ?: 0f
-            if (smile > 0.7f) {
-                val n = getSmileFrames() + 1
-                setSmileFrames(n)
-                if (n >= REQUIRED_FRAMES) { setSmileFrames(0); onProgress(LivenessStep.TURN_LEFT, 1f) }
-                else onProgress(LivenessStep.SMILE, n.toFloat() / REQUIRED_FRAMES)
-            } else {
-                setSmileFrames(maxOf(0, getSmileFrames() - 1))
-            }
-        }
-        LivenessStep.TURN_LEFT -> {
-            val yaw = face.headEulerAngleY
-            if (yaw < -20f) {
-                val n = getTurnLeftFrames() + 1
-                setTurnLeftFrames(n)
-                if (n >= REQUIRED_FRAMES) { setTurnLeftFrames(0); onProgress(LivenessStep.TURN_RIGHT, 1f) }
-                else onProgress(LivenessStep.TURN_LEFT, n.toFloat() / REQUIRED_FRAMES)
-            } else {
-                setTurnLeftFrames(maxOf(0, getTurnLeftFrames() - 1))
-            }
-        }
-        LivenessStep.TURN_RIGHT -> {
-            val yaw = face.headEulerAngleY
-            if (yaw > 20f) {
-                val n = getTurnRightFrames() + 1
-                setTurnRightFrames(n)
-                if (n >= REQUIRED_FRAMES) { setTurnRightFrames(0); onProgress(LivenessStep.COMPLETE, 1f) }
-                else onProgress(LivenessStep.TURN_RIGHT, n.toFloat() / REQUIRED_FRAMES)
-            } else {
-                setTurnRightFrames(maxOf(0, getTurnRightFrames() - 1))
-            }
-        }
-        LivenessStep.COMPLETE -> {}
+@Composable
+private fun CircularSelfieGuide(modifier: Modifier) {
+    Box(modifier) {
+        Box(
+            Modifier
+                .size(260.dp)
+                .align(Alignment.Center)
+                .clip(CircleShape)
+                .border(3.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+        )
     }
 }
 
@@ -327,106 +252,6 @@ private fun captureAndSave(
 }
 
 @Composable
-private fun FaceOvalOverlay(modifier: Modifier, step: LivenessStep, progress: Float) {
-    val borderColor by animateColorAsState(
-        targetValue = when {
-            step == LivenessStep.COMPLETE -> Color(0xFF4CAF50)
-            progress > 0.5f -> Color(0xFFFFC107)
-            else -> Color.White.copy(alpha = 0.7f)
-        },
-        animationSpec = tween(300), label = "borderColor"
-    )
-    Box(modifier) {
-        Box(
-            Modifier
-                .size(280.dp, 360.dp)
-                .align(Alignment.Center)
-                .clip(androidx.compose.foundation.shape.GenericShape { size, _ ->
-                    addOval(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
-                })
-                .border(4.dp, borderColor, androidx.compose.foundation.shape.GenericShape { size, _ ->
-                    addOval(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
-                })
-        )
-        if (step == LivenessStep.COMPLETE) {
-            Icon(
-                Icons.Filled.CheckCircle, "Complete",
-                tint = Color(0xFF4CAF50),
-                modifier = Modifier.size(64.dp).align(Alignment.Center)
-            )
-        }
-    }
-}
-
-@Composable
-private fun InstructionBubble(step: LivenessStep, progress: Float) {
-    AnimatedContent(targetState = step, label = "instruction") { s ->
-        Surface(
-            color = Color.Black.copy(alpha = 0.7f),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Column(
-                Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(s.emoji, fontSize = 36.sp)
-                Text(
-                    s.instruction,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                    fontSize = 18.sp,
-                    lineHeight = 24.sp
-                )
-                if (progress > 0f && progress < 1f) {
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier.fillMaxWidth(0.7f).height(6.dp).clip(CircleShape),
-                        color = SddPink,
-                        trackColor = Color.White.copy(alpha = 0.3f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LivenessStepIndicator(currentStep: LivenessStep) {
-    val steps = listOf(
-        LivenessStep.BLINK,
-        LivenessStep.SMILE,
-        LivenessStep.TURN_LEFT,
-        LivenessStep.TURN_RIGHT
-    )
-    val currentIndex = steps.indexOf(currentStep).coerceAtLeast(0)
-    Surface(color = Color.Black.copy(alpha = 0.5f), shape = RoundedCornerShape(20.dp)) {
-        Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            steps.forEachIndexed { index, step ->
-                val isDone = currentIndex > index || currentStep == LivenessStep.COMPLETE
-                val isCurrent = currentIndex == index
-                Box(
-                    Modifier.size(if (isCurrent) 10.dp else 8.dp)
-                        .clip(CircleShape)
-                        .background(
-                            when {
-                                isDone -> Color(0xFF4CAF50)
-                                isCurrent -> SddPink
-                                else -> Color.White.copy(alpha = 0.4f)
-                            }
-                        )
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun CameraPermissionRationale(onRequest: () -> Unit, onCancel: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
         Column(
@@ -436,7 +261,7 @@ private fun CameraPermissionRationale(onRequest: () -> Unit, onCancel: () -> Uni
         ) {
             Icon(Icons.Filled.CameraAlt, "Camera", tint = Color.White, modifier = Modifier.size(64.dp))
             Text("Camera Permission Required", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp, textAlign = TextAlign.Center)
-            Text("We need camera access to verify your identity. This photo is only used for KYC verification.", color = Color.White.copy(0.7f), textAlign = TextAlign.Center)
+            Text("Camera access is needed to take your verification selfie.", color = Color.White.copy(0.7f), textAlign = TextAlign.Center)
             Button(onClick = onRequest, colors = ButtonDefaults.buttonColors(containerColor = SddPink)) { Text("Grant Permission") }
             TextButton(onClick = onCancel) { Text("Cancel", color = Color.White.copy(0.7f)) }
         }

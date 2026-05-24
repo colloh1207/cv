@@ -21,7 +21,9 @@ data class TelegramUiState(
     val connectionState: TelegramConnectionState = TelegramConnectionState.DISCONNECTED,
     val botUsername: String? = null,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val kycApproved: Boolean = false,
+    val kycChecked: Boolean = false
 )
 
 @HiltViewModel
@@ -36,6 +38,7 @@ class TelegramBotViewModel @Inject constructor(
 
     init {
         checkExistingConnection()
+        loadKycStatus()
     }
 
     private fun checkExistingConnection() = viewModelScope.launch {
@@ -57,7 +60,30 @@ class TelegramBotViewModel @Inject constructor(
         }
     }
 
+    private fun loadKycStatus() = viewModelScope.launch {
+        try {
+            val userId = auth.currentUserOrNull()?.id ?: run {
+                _uiState.update { it.copy(kycChecked = true) }
+                return@launch
+            }
+            val rows = postgrest["kyc_submissions"].select {
+                filter {
+                    eq("user_id", userId)
+                    eq("status", "approved")
+                }
+            }.decodeList<Map<String, String>>()
+            _uiState.update { it.copy(kycApproved = rows.isNotEmpty(), kycChecked = true) }
+        } catch (e: Exception) {
+            Timber.e(e, "Error loading KYC status")
+            _uiState.update { it.copy(kycChecked = true) }
+        }
+    }
+
     fun connectBot(token: String) = viewModelScope.launch {
+        if (!_uiState.value.kycApproved) {
+            _uiState.update { it.copy(error = "Please complete KYC verification before connecting a Telegram bot.") }
+            return@launch
+        }
         if (token.isBlank() || !token.contains(":")) {
             _uiState.update { it.copy(error = "Please enter a valid bot token") }
             return@launch

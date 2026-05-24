@@ -1,6 +1,6 @@
 -- =====================================================
 -- Sdd Marketplace — Supabase PostgreSQL Schema
--- Project: fkeuioagahwqgpqjuwqj
+-- Project: vekuqvtsrdboqlewlpqp
 -- =====================================================
 
 -- Enable extensions
@@ -48,6 +48,55 @@ CREATE POLICY "Users can update own profile"
 
 CREATE POLICY "Users can insert own profile"
     ON public.users FOR INSERT WITH CHECK (auth.uid() = id);
+
+-- =====================================================
+-- AUTO-CREATE PROFILE ON SIGNUP TRIGGER
+-- =====================================================
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  v_email TEXT;
+  v_full_name TEXT;
+  v_username TEXT;
+  v_referral TEXT;
+BEGIN
+  v_email := NEW.email;
+  v_full_name := COALESCE(
+    NEW.raw_user_meta_data->>'full_name',
+    INITCAP(REPLACE(SPLIT_PART(COALESCE(v_email, ''), '@', 1), '.', ' ')),
+    'User'
+  );
+  v_username := LOWER(
+    REGEXP_REPLACE(
+      SPLIT_PART(COALESCE(v_email, NEW.id::text), '@', 1),
+      '[^a-z0-9_]', '_', 'g'
+    )
+  );
+  IF v_username = '' THEN
+    v_username := 'user' || LOWER(SUBSTRING(NEW.id::text, 1, 6));
+  END IF;
+  v_referral := 'SDD-' || UPPER(SUBSTRING(NEW.id::text, 1, 6));
+
+  INSERT INTO public.users (
+    id, email, full_name, username, referral_code,
+    is_verified, is_seller, rating, review_count,
+    follower_count, following_count, product_count, sold_count, response_rate
+  ) VALUES (
+    NEW.id, v_email, v_full_name, v_username, v_referral,
+    false, true, 0.0, 0, 0, 0, 0, 0, 100
+  )
+  ON CONFLICT (id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
 -- =====================================================
 -- PRODUCTS TABLE
